@@ -1,0 +1,118 @@
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+import SimpleITK as sitk
+from skimage import measure
+import trimesh
+import pymeshlab
+
+# ---------------- Configuration Section ----------------
+INPUT_CT_SCAN_DIR = "C:\\Users\\taral\\Documents\\vscode\\data_and_image_files\\CT of the Brain - Kaggle\\files\\cancer"  # Path to the directory containing DICOM files
+OUTPUT_MESH = "C:\\Users\\taral\\Documents\\vscode\\data_and_image_files\\cancer_tumor_mesh.stl"  # Path to the output 3D mesh file
+TEMP_DIR = "C:\\Users\\taral\\Documents\\vscode\\data_and_image_files\\temp"  # Temporary directory for intermediate files
+
+# Ensure temporary directory exists
+os.makedirs(TEMP_DIR, exist_ok=True)
+
+# ---------------- Library Import Section ----------------
+try:
+    import SimpleITK as sitk
+    from skimage import measure
+    import trimesh
+except ImportError as e:
+    print(f"Error importing libraries: {e}")
+    exit(1)
+
+# ---------------- Pipeline Workflow ----------------
+
+def load_ct_scan_series(directory):
+    """Loads a DICOM series from a directory."""
+    print("Loading CT scan...")
+    try:
+        reader = sitk.ImageSeriesReader()
+        dicom_names = reader.GetGDCMSeriesIDs(directory)
+        if not dicom_names:
+            raise ValueError("DICOM series not found.")
+        dicom_name = dicom_names[0]
+        dicom_filenames = reader.GetGDCMSeriesFileNames(directory, dicom_name)
+        reader.SetFileNames(dicom_filenames)
+        ct_image = reader.Execute()
+        ct_array = sitk.GetArrayFromImage(ct_image)
+        print(f"CT scan loaded successfully. Shape: {ct_array.shape}")
+
+        return ct_array
+    except Exception as e:
+        print(f"Error loading DICOM series: {e}")
+        return None
+
+def segment_tumor(ct_array):
+    """Segments the tumor using a moving threshold for each slice."""
+    print("Segmenting tumor with moving threshold...")
+    binary_mask = np.zeros_like(ct_array, dtype=bool)
+
+    for slice_index in range(ct_array.shape[0]):
+        slice_data = ct_array[slice_index, :, :]
+
+        # Calculate dynamic threshold based on slice data
+        lower_threshold = np.percentile(slice_data, 40) #Adjust percentiles as needed.
+        upper_threshold = np.percentile(slice_data, 90) #Adjust percentiles as needed.
+
+        # Apply thresholding for the current slice
+        binary_mask[slice_index, :, :] = np.logical_and(slice_data >= lower_threshold, slice_data <= upper_threshold)
+
+    print(f"Number of segmented voxels: {np.count_nonzero(binary_mask)}")
+    print(f"Segmentation complete. Shape: {binary_mask.shape}")
+    return binary_mask
+
+def generate_mesh(segmented):
+    """Generates a 3D mesh from the segmented volume."""
+    print("Generating mesh...")
+    if segmented.shape[0] < 2 or segmented.shape[1] < 2 or segmented.shape[2] < 2:
+        print("Error: The segmented volume is too small for mesh generation.")
+        return None
+    if not np.any(segmented):
+        print("Error: The segmented volume is empty. No mesh will be generated.")
+        return None
+    verts, faces, normals, _ = measure.marching_cubes(segmented, level=0)
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, vertex_normals=normals)
+    output_mesh = os.path.join(TEMP_DIR, "raw_mesh.stl")
+    mesh.export(output_mesh)
+    print(f"Mesh saved as STL at: {output_mesh}")
+    return output_mesh
+
+def optimize_mesh(mesh_file):
+    """Optimizes the mesh using PyMeshLab with Laplacian Smooth."""
+    print("Optimizing mesh using PyMeshLab...")
+    optimized_mesh = os.path.join(TEMP_DIR, "optimized.stl")
+    try:
+        ms = pymeshlab.MeshSet()
+        ms.load_new_mesh(mesh_file)
+        ms.apply_filter('apply_coord_laplacian_smoothing_surface_preserving', iterations=10)
+        ms.save_current_mesh(optimized_mesh)
+        print("Mesh optimization complete.")
+        return optimized_mesh
+    except Exception as e:
+        print(f"Error optimizing mesh: {e}")
+        return None
+
+def main():
+    ct_array = load_ct_scan_series(INPUT_CT_SCAN_DIR)
+    if ct_array is None:
+        print("Loading DICOM series failed. Exiting.")
+        return
+    segmented = segment_tumor(ct_array)
+    if segmented is None:
+        print("Segmentation failed. Exiting.")
+        return
+    mesh = generate_mesh(segmented)
+    if mesh is None:
+        print("Mesh generation failed. Exiting.")
+        return
+    optimized_mesh = optimize_mesh(mesh)
+    if optimized_mesh is None:
+        print("Mesh optimization failed. Exiting.")
+        return
+    print(f"3D printable mesh saved at: {optimized_mesh}")
+
+if __name__ == "__main__":
+    main()
